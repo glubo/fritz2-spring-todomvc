@@ -1,7 +1,6 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
-  war
   id("org.springframework.boot")
   id("io.spring.dependency-management")
   kotlin("jvm")
@@ -9,10 +8,7 @@ plugins {
   kotlin("plugin.jpa")
 }
 
-//java.sourceCompatibility = JavaVersion.VERSION_1_8
-//java.targetCompatibility = JavaVersion.VERSION_11
-
-java.sourceCompatibility = JavaVersion.VERSION_11
+java.sourceCompatibility = JavaVersion.VERSION_17
 
 dependencies {
   implementation(project(":app"))
@@ -38,11 +34,12 @@ tasks {
   withType<KotlinCompile> {
     kotlinOptions {
       freeCompilerArgs = listOf("-Xjsr305=strict")
-      jvmTarget = "11"
+      jvmTarget = "17"
     }
   }
   processResources {
     dependsOn(":app:jsBrowserWebpack")
+    dependsOn(":app:jsBrowserDistribution")
     from(project(":app").projectDir.resolve("src/commonMain/resources")) {
       into("static")
     }

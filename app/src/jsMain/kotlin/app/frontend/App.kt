@@ -2,12 +2,10 @@ package app.frontend
 
 import app.model.*
 import dev.fritz2.core.*
-import dev.fritz2.remote.data
+import dev.fritz2.remote.http
 import dev.fritz2.routing.routerOf
-import kotlinx.browser.localStorage
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
-import org.w3c.dom.get
 
 data class Filter(val text: String, val function: (List<ToDo>) -> List<ToDo>)
 
@@ -20,42 +18,32 @@ val filters = mapOf(
 const val endpoint = "/api/todos"
 val router = routerOf("all")
 
-const val persistencePrefix = "todos"
 
-object ToDoListStore : RootStore<List<ToDo>>(emptyList(), persistencePrefix) {
+object ToDoListStore : RootStore<List<ToDo>>(emptyList()) {
+
+    val todoRequest = http(endpoint)
 
     private val query = handle {
-        buildList {
-            for (index in 0 until localStorage.length) {
-                val key = localStorage.key(index)
-                if (key != null && key.startsWith(persistencePrefix)) {
-                    add(ToDo.deserialize(localStorage[key]!!))
-                }
-            }
-        }
+        val response = todoRequest.get()
+        ToDo.deserializeMany(response.body())
     }
 
     val save = handle<ToDo> { toDos, new ->
         if (new.text.isNotBlank()) {
-            localStorage.setItem("${persistencePrefix}.${new.id}", ToDo.serialize(new))
+            val responseTodo = upsertTodoOnServer(new)
             var inList = false
             val updatedList = toDos.map {
-                if (it.id == new.id) {
+                if (it.id == responseTodo.id) {
                     inList = true
-                    new
+                    responseTodo
                 } else it
             }
-            if (inList) updatedList else toDos + new
+            if (inList) updatedList else toDos + responseTodo
         } else delete(toDos, new.id)
     }
 
-    val remove = handle<String> { toDos, id ->
+    val remove = handle<Long> { toDos, id ->
         delete(toDos, id)
-    }
-
-    private fun delete(entities: List<ToDo>, id: String): List<ToDo> {
-        localStorage.removeItem("${persistencePrefix}.$id")
-        return entities.filterNot { it.id == id }
     }
 
     val toggleAll = handle { toDos, toggle: Boolean ->
@@ -66,10 +54,7 @@ object ToDoListStore : RootStore<List<ToDo>>(emptyList(), persistencePrefix) {
         val updated = (toDos + toUpdate).groupBy{ it.id }
             .filterValues { it.size > 1 }.mapValues { (id, entities) ->
                 val entity = entities.last()
-                localStorage.setItem(
-                    "${persistencePrefix}.$id",
-                    ToDo.serialize(entity)
-                )
+                upsertTodoOnServer(entity)
                 entity
             }
 
@@ -79,15 +64,36 @@ object ToDoListStore : RootStore<List<ToDo>>(emptyList(), persistencePrefix) {
     val clearCompleted = handle { toDos ->
         toDos.partition(ToDo::completed).let { (completed, active) ->
             completed.map(ToDo::id).forEach {
-                localStorage.removeItem("${persistencePrefix}.$it")
+                delete(listOf(), it)
             }
             active
         }
     }
 
     val count = data.map { todos -> todos.count { !it.completed } }.distinctUntilChanged()
+
     val empty = data.map { it.isEmpty() }.distinctUntilChanged()
+
     val allChecked = data.map { todos -> todos.isNotEmpty() && todos.all { it.completed } }.distinctUntilChanged()
+    private suspend fun delete(entities: List<ToDo>, id: Long): List<ToDo> {
+        if (id != ToDo.NEW_ITEM_ID) {
+            todoRequest.delete("/$id")
+        }
+        return entities.filterNot { it.id == id }
+    }
+    private suspend fun upsertTodoOnServer(new: ToDo) = if (new.isNewItem()) {
+        val response = todoRequest.body(ToDo.serialize(new))
+            .contentType("application/json")
+            .post()
+
+        ToDo.deserialize(response.body())
+    } else {
+        val response = todoRequest.body(ToDo.serialize(new))
+            .contentType("application/json")
+            .put("/${new.id}")
+
+        ToDo.deserialize(response.body())
+    }
 
     init {
         query()
@@ -134,10 +140,10 @@ fun RenderContext.mainSection() {
             ToDoListStore.data.combine(router.data) { all, route ->
                 filters[route]?.function?.invoke(all) ?: all
             }.renderEach(ToDo::id) { toDo ->
-                val toDoStore = ToDoListStore.sub(toDo, ToDo::id)
+                val toDoStore = ToDoListStore.mapByElement(toDo, ToDo::id)
                 toDoStore.data.drop(1) handledBy ToDoListStore.save
-                val textStore = toDoStore.sub(ToDo.text())
-                val completedStore = toDoStore.sub(ToDo.completed())
+                val textStore = toDoStore.map(ToDo.text())
+                val completedStore = toDoStore.map(ToDo.completed())
 
                 val editingStore = storeOf(false)
 
